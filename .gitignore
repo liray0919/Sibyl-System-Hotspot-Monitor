@@ -1,0 +1,14 @@
+.DS_Store
+node_modules/
+
+# Runtime data
+sibyl/data/
+
+# Logs and local environment files
+*.log
+.env
+.env.*
+
+# Editor files
+.idea/
+.vscode/

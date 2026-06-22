@@ -1,0 +1,140 @@
+# Sibyl System Hotspot Monitor
+
+Sibyl System Hotspot Monitor is a multi-platform hotspot signal aggregator and trend monitor for game, esports, and sports topics. It collects public trend signals from Weibo, Douyin, Tieba, and Hupu, then turns scattered hot-board items into structured alerts and hourly Markdown briefings.
+
+The system is designed for fast operational reading: it keeps high-heat Weibo and Douyin instant alerts, adds Tieba and Hupu as community signals, merges related events across platforms, scores trend strength, and generates concise action-oriented reports for enterprise chat workflows.
+
+## What It Does
+
+- Collects hotspot snapshots every 10 minutes across Weibo, Douyin, Tieba, and Hupu.
+- Sends instant alerts for high-ranking or high-heat Weibo and Douyin topics.
+- Builds hourly integrated hotspot briefings from the latest snapshot and recent history.
+- Filters topics into game, esports, and sports categories.
+- Merges similar platform signals into event-level topic clusters.
+- Scores topics by rank, heat, platform coverage, category matches, and cross-platform resonance.
+- Tracks trend movement with previous-state and recent-snapshot comparison.
+- Generates Markdown reports suitable for enterprise WeChat webhook delivery.
+- Uses conservative AI-assisted summaries and handling suggestions when model configuration is available.
+
+## Repository Layout
+
+```text
+.
+├── sibyl/
+│   ├── SKILL.md
+│   └── scripts/
+│       ├── collect-snapshot.js
+│       ├── instant-alerts.js
+│       ├── sibyl.js
+│       ├── config.example.json
+│       ├── adapters/
+│       └── lib/
+├── elixir-summarizer/
+│   ├── SKILL.md
+│   └── scripts/
+│       ├── elixir-summarizer.js
+│       └── keywords.json
+├── docs/
+│   └── Sibyl_System_产品文档.md
+├── CHANGELOG.md
+└── README.md
+```
+
+## Runtime Requirements
+
+- Node.js 18 or newer.
+- Network access to the monitored public hot-board pages.
+- Optional enterprise WeChat webhook for alert and report delivery.
+- Optional OpenClaw model/provider configuration for AI summaries and suggestions.
+
+The core scripts use Node.js built-in modules only. No package installation is required for the current version.
+
+## Quick Start
+
+Run from the repository root:
+
+```bash
+cd sibyl
+SIBYL_DATA_DIR=./data node scripts/collect-snapshot.js
+SIBYL_DATA_DIR=./data node scripts/instant-alerts.js --no-push
+SIBYL_DATA_DIR=./data node scripts/sibyl.js --print --no-push
+```
+
+By default, local output files are written to `sibyl/data/` when `SIBYL_DATA_DIR=./data` is used.
+
+## Configuration
+
+Copy the example configuration into the data directory:
+
+```bash
+mkdir -p sibyl/data
+cp sibyl/scripts/config.example.json sibyl/data/config.json
+```
+
+Common settings:
+
+```json
+{
+  "filters": {
+    "allowedCategories": ["游戏", "电竞", "体育"],
+    "minTitleLength": 4
+  },
+  "snapshot": {
+    "maxAgeMinutes": 20,
+    "trendWindowMinutes": 70
+  },
+  "alerts": {
+    "pushWeCom": false,
+    "dedupe": "daily"
+  },
+  "report": {
+    "topN": 10,
+    "minScore": 20,
+    "requireSeedPlatforms": true,
+    "seedPlatforms": ["weibo", "douyin"],
+    "pushWeCom": false
+  }
+}
+```
+
+Webhook environment variables are preferred over hard-coded configuration:
+
+```bash
+export SIBYL_ALERT_WEBHOOK="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=ALERT_KEY"
+export SIBYL_REPORT_WEBHOOK="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=REPORT_KEY"
+```
+
+## Scheduled Deployment
+
+Sibyl is normally deployed with two schedules:
+
+```bash
+*/10 10-22 * * * cd /root/.openclaw/workspace/skills/sibyl && node scripts/collect-snapshot.js >> /var/log/sibyl-snapshot.log 2>&1 && node scripts/instant-alerts.js --push >> /var/log/sibyl-alerts.log 2>&1
+0 10-22 * * * cd /root/.openclaw/workspace/skills/sibyl && node scripts/sibyl.js --push >> /var/log/sibyl.log 2>&1
+```
+
+Use `Asia/Shanghai` as the system time zone when deploying with the default Beijing-time operating window.
+
+## Output Files
+
+```text
+sibyl/data/
+├── snapshot-latest.json
+├── snapshots/
+├── alerts-state.json
+├── alert-summaries.json
+├── signals-latest.json
+├── clusters-latest.json
+├── report-latest.md
+└── state.json
+```
+
+Runtime data is intentionally ignored by Git.
+
+## Documentation
+
+See [docs/Sibyl_System_产品文档.md](docs/Sibyl_System_产品文档.md) for the full Chinese product document, including architecture, scoring logic, alert rules, deployment notes, risk boundaries, and version history.
+
+## License
+
+MIT License. See [LICENSE](LICENSE).

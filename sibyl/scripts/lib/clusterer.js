@@ -1,0 +1,398 @@
+const { formatHeat, normalizeForCompare, stableHash } = require('./signals');
+
+const PLATFORM_WEIGHTS = {
+  weibo: 1.0,
+  douyin: 1.0,
+  tieba: 0.5,
+  hupu: 0.6
+};
+
+const PLATFORM_LABELS = {
+  weibo: '微博',
+  douyin: '抖音',
+  tieba: '贴吧',
+  hupu: '虎扑'
+};
+
+const SOURCE_TYPE_WEIGHT = {
+  hot_search: 1.0,
+  hot_board: 0.95,
+  hot_topic: 0.95,
+  board_hot: 0.75
+};
+
+const STOP_WORDS = new Set([
+  '热搜', '热榜', '话题', '回应', '官方', '最新', '今天', '今日', '昨日',
+  '怎么回事', '为什么', '排名', '讨论', '网友', '冲上', '登上', '引热议'
+]);
+
+const GENERIC_KEYWORDS = new Set([
+  '游戏', '电竞', '体育', '足球', '篮球', 'nba', 'cba', 'lpl', 'lck', 'kpl',
+  '英雄联盟', '王者荣耀', '世界杯', '欧冠', '英超', 'msi', '热搜', '热榜'
+]);
+
+const EVENT_CONCEPT_PATTERNS = [
+  { concept: 'hat_trick', pattern: /帽子戏法|戴帽|三进球/ },
+  { concept: 'goal', pattern: /世界波|进球|破门|绝杀|任意球|双响/ },
+  { concept: 'foul_injury', pattern: /踩小腿|踩踏|犯规|红牌|黄牌|受伤|伤退|拉伤|撞伤|伤病/ },
+  { concept: 'fan_support', pattern: /球迷|双向奔赴|加油|应援/ },
+  { concept: 'win_loss', pattern: /击败|战胜|不敌|淘汰|锁定|晋级|出线|夺冠|夺金|取胜|输给|获胜|翻盘/ },
+  { concept: 'award', pattern: /当选|最佳|mvp|MVP|全场最佳/ },
+  { concept: 'record', pattern: /射手王|纪录|记录|队史|历史|加冕/ },
+  { concept: 'response', pattern: /回应|道歉|辟谣|否认|声明|发文|怒喷|吐槽|炮轰/ },
+  { concept: 'mechanism', pattern: /机制|elo|ELO|排位|匹配/ },
+  { concept: 'lineup_schedule', pattern: /训练赛|参赛|名单|阵容|赛程|开赛|首发|分组|抽签/ },
+  { concept: 'stats', pattern: /数据|统计|胜率|场次|年龄|排名|榜单/ },
+  { concept: 'transfer_trade', pattern: /交易|签约|续约|加盟|离队|转会|换来|换走|选秀|签位/ },
+  { concept: 'game_update', pattern: /上线|更新|削弱|加强|改动|版本|皮肤|补丁/ },
+  { concept: 'appearance', pattern: /合照|见面会|献唱|直播|采访|亮相/ }
+];
+
+function scoreSignal(signal) {
+  const platformWeight = PLATFORM_WEIGHTS[signal.platform] || 0.7;
+  const sourceWeight = SOURCE_TYPE_WEIGHT[signal.sourceType] || 0.8;
+  const rank = signal.rank || 999;
+  const rankScore = Math.max(0, 36 - Math.min(rank, 35)) * 1.25;
+  const heatScore = Math.min(36, Math.log10((signal.heat || 0) + 10) * 6);
+  const keywordBoost = Math.min(12, (signal.matchedKeywords || []).length * 2.5);
+  const boardBoost = signal.sourceType === 'board_hot' ? 4 : 0;
+  return Math.round((rankScore + heatScore + keywordBoost + boardBoost) * platformWeight * sourceWeight);
+}
+
+function chineseBigrams(text) {
+  const chars = text.replace(/[^\u4e00-\u9fa5]/g, '');
+  const grams = [];
+  for (let i = 0; i < chars.length - 1; i++) {
+    grams.push(chars.slice(i, i + 2));
+  }
+  return grams;
+}
+
+function extractTokens(signal) {
+  const normalized = normalizeForCompare(signal.title);
+  const tokens = new Set();
+
+  (signal.matchedKeywords || []).forEach(keyword => {
+    const word = normalizeForCompare(keyword);
+    if (word && !STOP_WORDS.has(word)) tokens.add(word);
+  });
+
+  const englishTokens = normalized.match(/[a-z0-9][a-z0-9_.-]{1,}/gi) || [];
+  englishTokens.forEach(token => {
+    if (!STOP_WORDS.has(token)) tokens.add(token);
+  });
+
+  chineseBigrams(normalized).forEach(token => {
+    if (!STOP_WORDS.has(token)) tokens.add(token);
+  });
+
+  return [...tokens].filter(token => token.length >= 2).slice(0, 40);
+}
+
+function extractEntityTokens(signal) {
+  const entities = new Set();
+  (signal.matchedKeywords || []).forEach(keyword => {
+    const word = normalizeForCompare(keyword);
+    if (word && !STOP_WORDS.has(word) && !GENERIC_KEYWORDS.has(word)) {
+      entities.add(word);
+    }
+  });
+
+  const englishTokens = normalizeForCompare(signal.title).match(/[a-z0-9][a-z0-9_.-]{1,}/gi) || [];
+  englishTokens.forEach(token => {
+    const word = normalizeForCompare(token);
+    if (word && !GENERIC_KEYWORDS.has(word)) entities.add(word);
+  });
+
+  return [...entities].slice(0, 20);
+}
+
+function extractEventConcepts(title = '') {
+  const concepts = new Set();
+  EVENT_CONCEPT_PATTERNS.forEach(({ concept, pattern }) => {
+    if (pattern.test(title)) concepts.add(concept);
+  });
+  return [...concepts];
+}
+
+function jaccard(a, b) {
+  if (!a.length || !b.length) return 0;
+  const setA = new Set(a);
+  const setB = new Set(b);
+  let intersection = 0;
+  for (const item of setA) {
+    if (setB.has(item)) intersection++;
+  }
+  const union = new Set([...setA, ...setB]).size;
+  return union ? intersection / union : 0;
+}
+
+function sharedStrongKeyword(signal, cluster) {
+  const signalKeywords = new Set((signal.matchedKeywords || []).map(normalizeForCompare).filter(Boolean));
+  const clusterKeywords = new Set((cluster.keywords || []).map(normalizeForCompare).filter(Boolean));
+  for (const keyword of signalKeywords) {
+    if (!clusterKeywords.has(keyword)) continue;
+    if (GENERIC_KEYWORDS.has(keyword)) continue;
+    if (/^[a-z0-9_.-]{3,}$/i.test(keyword)) return keyword;
+    if (/^[\u4e00-\u9fa5]{2,}$/.test(keyword)) return keyword;
+  }
+  return null;
+}
+
+function longestCommonSubstringRatio(a, b) {
+  if (!a || !b) return 0;
+  const shorter = a.length <= b.length ? a : b;
+  const longer = a.length > b.length ? a : b;
+  let best = 0;
+
+  for (let i = 0; i < shorter.length; i++) {
+    for (let j = i + 2; j <= shorter.length; j++) {
+      const piece = shorter.slice(i, j);
+      if (piece.length <= best) continue;
+      if (longer.includes(piece)) best = piece.length;
+    }
+  }
+
+  return best / Math.max(1, Math.min(a.length, b.length));
+}
+
+function similarity(signal, cluster) {
+  const tokenScore = jaccard(signal.tokens, cluster.tokens);
+  const titleScore = Math.max(...cluster.signals.map(existing =>
+    longestCommonSubstringRatio(signal.normalizedTitle, existing.normalizedTitle)
+  ));
+  const keywordScore = jaccard(signal.matchedKeywords || [], cluster.keywords || []);
+  const entityScore = jaccard(signal.entityTokens || [], cluster.entityTokens || []);
+  const conceptScore = jaccard(signal.eventConcepts || [], cluster.eventConcepts || []);
+  const baseScore = tokenScore * 0.45 + titleScore * 0.45 + keywordScore * 0.1;
+  const strongKeyword = sharedStrongKeyword(signal, cluster);
+  const signalHasConcept = (signal.eventConcepts || []).length > 0;
+  const clusterHasConcept = (cluster.eventConcepts || []).length > 0;
+  const hasEntityOverlap = Boolean(strongKeyword) || entityScore > 0;
+  const hasConceptConflict = hasEntityOverlap &&
+    signalHasConcept &&
+    clusterHasConcept &&
+    conceptScore === 0;
+
+  if (hasConceptConflict && titleScore < 0.55) {
+    return Math.min(baseScore, 0.25);
+  }
+
+  if (hasEntityOverlap && conceptScore > 0 && (titleScore >= 0.08 || tokenScore >= 0.05)) {
+    return Math.max(baseScore, 0.62);
+  }
+
+  if (strongKeyword && !signalHasConcept && !clusterHasConcept && (titleScore >= 0.55 || tokenScore >= 0.28)) {
+    return Math.max(baseScore, 0.58);
+  }
+
+  return baseScore;
+}
+
+function summarizePlatforms(signals) {
+  return signals
+    .slice()
+    .sort((a, b) => scoreSignal(b) - scoreSignal(a))
+    .map(signal => {
+      const rank = signal.rank ? `#${signal.rank}` : '未排名';
+      const heat = signal.heat ? ` ${formatHeat(signal.heat)}` : '';
+      const board = signal.board ? `${signal.platformLabel}/${signal.board}` : signal.platformLabel;
+      return `${board}${rank}${heat}`;
+    });
+}
+
+function dominantCategory(signals) {
+  const scores = {};
+  for (const signal of signals) {
+    if (!signal.category) continue;
+    scores[signal.category] = (scores[signal.category] || 0) + scoreSignal(signal);
+  }
+  const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
+  return ranked[0]?.[0] || null;
+}
+
+function statusFrom(prev, score, firstSeenAt) {
+  if (!prev) return 'new';
+  const previousScore = prev.score || 0;
+  const growthRate = previousScore ? (score - previousScore) / previousScore : 0;
+  const ageHours = (Date.now() - new Date(firstSeenAt).getTime()) / 3600000;
+
+  if (growthRate >= 0.35) return 'rising';
+  if (growthRate <= -0.28) return 'cooling';
+  if (ageHours >= 12) return 'holding';
+  return 'steady';
+}
+
+function statusLabel(status) {
+  return {
+    new: '新上榜',
+    rising: '热度上升',
+    holding: '持续在榜',
+    steady: '稳定观察',
+    cooling: '热度回落'
+  }[status] || status;
+}
+
+function platformNames(platforms = []) {
+  return platforms.map(platform => PLATFORM_LABELS[platform] || platform).join('、');
+}
+
+function buildBroadcastReasons(cluster, prev) {
+  if (!prev) return ['首次进入播报候选'];
+
+  const reasons = [];
+  const growthPercent = cluster.growthRate === null || cluster.growthRate === undefined
+    ? 0
+    : Math.round(cluster.growthRate * 100);
+
+  if (growthPercent >= 30) {
+    reasons.push(`综合分较上轮上升 ${growthPercent}%`);
+  } else if (growthPercent <= -25) {
+    reasons.push(`综合分较上轮下降 ${Math.abs(growthPercent)}%`);
+  }
+
+  const previousPlatforms = new Set(prev.platforms || []);
+  const newPlatforms = cluster.platforms.filter(platform => !previousPlatforms.has(platform));
+  if (newPlatforms.length > 0) {
+    reasons.push(`新增${platformNames(newPlatforms)}信号`);
+  }
+
+  if (prev.bestRank && cluster.bestRank && cluster.bestRank < prev.bestRank) {
+    reasons.push(`最高排名从 #${prev.bestRank} 升至 #${cluster.bestRank}`);
+  }
+
+  if ((prev.platforms || []).length && cluster.platformCount > (prev.platforms || []).length) {
+    reasons.push(`覆盖平台从 ${(prev.platforms || []).length} 个增至 ${cluster.platformCount} 个`);
+  }
+
+  if (reasons.length === 0) {
+    reasons.push('延续在榜，综合分和平台覆盖变化不大');
+  }
+
+  return reasons;
+}
+
+function buildTopicKey(cluster) {
+  const entityPart = [...new Set(cluster.entityTokens || [])]
+    .sort()
+    .slice(0, 4)
+    .join('|');
+  const conceptPart = [...new Set(cluster.mainSignal.eventConcepts || [])]
+    .sort()
+    .slice(0, 4)
+    .join('|');
+  const keywordPart = [...new Set(cluster.keywords || [])]
+    .map(normalizeForCompare)
+    .filter(Boolean)
+    .sort()
+    .slice(0, 4)
+    .join('|');
+  const titlePart = cluster.mainSignal.normalizedTitle.slice(0, 40);
+  return stableHash(`${entityPart || keywordPart}:${conceptPart}:${titlePart}`);
+}
+
+function finalizeCluster(cluster, previousByKey) {
+  cluster.signals.sort((a, b) => scoreSignal(b) - scoreSignal(a));
+  cluster.mainSignal = cluster.signals[0];
+  cluster.keywords = [...new Set(cluster.signals.flatMap(signal => signal.matchedKeywords || []))];
+  cluster.entityTokens = [...new Set(cluster.signals.flatMap(signal => signal.entityTokens || []))];
+  cluster.eventConcepts = [...new Set(cluster.signals.flatMap(signal => signal.eventConcepts || []))];
+  cluster.category = dominantCategory(cluster.signals);
+  cluster.platforms = [...new Set(cluster.signals.map(signal => signal.platform))];
+  cluster.platformCount = cluster.platforms.length;
+  cluster.platformSummary = summarizePlatforms(cluster.signals);
+  cluster.bestRank = Math.min(...cluster.signals.map(signal => signal.rank || 999));
+  cluster.totalHeat = cluster.signals.reduce((sum, signal) => sum + (signal.heat || 0), 0);
+
+  const signalScore = cluster.signals.reduce((sum, signal) => sum + scoreSignal(signal), 0);
+  const crossPlatformBonus = Math.max(0, cluster.platformCount - 1) * 22;
+  const strongSourceBonus = cluster.signals.some(signal => signal.rank && signal.rank <= 3) ? 12 : 0;
+  cluster.score = Math.round(signalScore + crossPlatformBonus + strongSourceBonus);
+  cluster.topicKey = buildTopicKey(cluster);
+  cluster.topicId = cluster.topicKey;
+
+  const prev = previousByKey[cluster.topicKey];
+  const earliestSignalTime = cluster.signals
+    .map(signal => signal.capturedAt)
+    .sort()[0];
+  cluster.firstSeenAt = prev?.firstSeenAt || earliestSignalTime || new Date().toISOString();
+  cluster.lastSeenAt = new Date().toISOString();
+  cluster.previousScore = prev?.score || 0;
+  cluster.growthRate = cluster.previousScore ? Number(((cluster.score - cluster.previousScore) / cluster.previousScore).toFixed(2)) : null;
+  cluster.status = statusFrom(prev, cluster.score, cluster.firstSeenAt);
+  cluster.statusLabel = statusLabel(cluster.status);
+  cluster.broadcastReasons = buildBroadcastReasons(cluster, prev);
+
+  return cluster;
+}
+
+function clusterSignals(signals, previousState = {}, config = {}) {
+  const threshold = config.similarityThreshold ?? 0.42;
+  const previousByKey = previousState.clustersByKey || {};
+  const enrichedSignals = signals.map(signal => ({
+    ...signal,
+    tokens: extractTokens(signal),
+    entityTokens: extractEntityTokens(signal),
+    eventConcepts: extractEventConcepts(signal.title)
+  })).sort((a, b) => scoreSignal(b) - scoreSignal(a));
+
+  const clusters = [];
+  for (const signal of enrichedSignals) {
+    let bestCluster = null;
+    let bestScore = 0;
+
+    for (const cluster of clusters) {
+      const currentScore = similarity(signal, cluster);
+      if (currentScore > bestScore) {
+        bestScore = currentScore;
+        bestCluster = cluster;
+      }
+    }
+
+    if (bestCluster && bestScore >= threshold) {
+      bestCluster.signals.push(signal);
+      bestCluster.tokens = [...new Set([...bestCluster.tokens, ...signal.tokens])].slice(0, 60);
+      bestCluster.keywords = [...new Set([...bestCluster.keywords, ...(signal.matchedKeywords || [])])];
+      bestCluster.entityTokens = [...new Set([...bestCluster.entityTokens, ...signal.entityTokens])].slice(0, 40);
+      bestCluster.eventConcepts = [...new Set([...bestCluster.eventConcepts, ...signal.eventConcepts])].slice(0, 20);
+    } else {
+      clusters.push({
+        signals: [signal],
+        tokens: signal.tokens,
+        keywords: signal.matchedKeywords || [],
+        entityTokens: signal.entityTokens || [],
+        eventConcepts: signal.eventConcepts || []
+      });
+    }
+  }
+
+  return clusters
+    .map(cluster => finalizeCluster(cluster, previousByKey))
+    .sort((a, b) => b.score - a.score);
+}
+
+function buildNextState(clusters) {
+  const clustersByKey = {};
+  clusters.forEach(cluster => {
+    clustersByKey[cluster.topicKey] = {
+      title: cluster.mainSignal.title,
+      score: cluster.score,
+      bestRank: cluster.bestRank,
+      firstSeenAt: cluster.firstSeenAt,
+      lastSeenAt: cluster.lastSeenAt,
+      platforms: cluster.platforms
+    };
+  });
+
+  return {
+    updatedAt: new Date().toISOString(),
+    clustersByKey
+  };
+}
+
+module.exports = {
+  clusterSignals,
+  buildNextState,
+  scoreSignal,
+  statusLabel
+};

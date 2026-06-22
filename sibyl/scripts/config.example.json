@@ -1,0 +1,87 @@
+{
+  "platforms": {
+    "weibo": {
+      "enabled": true,
+      "maxItems": 50
+    },
+    "douyin": {
+      "enabled": true,
+      "maxItems": 50
+    },
+    "tieba": {
+      "enabled": true,
+      "maxItems": 50,
+      "hotTopicUrl": "https://tieba.baidu.com/hottopic/browse/topicList?res_type=1"
+    },
+    "hupu": {
+      "enabled": true,
+      "maxItems": 80,
+      "boards": [
+        {
+          "board": "步行街",
+          "url": "https://bbs.hupu.com/all-gambia",
+          "maxItems": 25
+        },
+        {
+          "board": "英雄联盟",
+          "url": "https://bbs.hupu.com/lol",
+          "maxItems": 25
+        },
+        {
+          "board": "NBA",
+          "url": "https://bbs.hupu.com/nba",
+          "maxItems": 25
+        },
+        {
+          "board": "国际足球",
+          "url": "https://bbs.hupu.com/soccer",
+          "maxItems": 25
+        }
+      ]
+    }
+  },
+  "filters": {
+    "allowedCategories": ["游戏", "电竞", "体育"],
+    "minTitleLength": 4
+  },
+  "cluster": {
+    "similarityThreshold": 0.42
+  },
+  "snapshot": {
+    "maxAgeMinutes": 20,
+    "trendWindowMinutes": 70
+  },
+  "alerts": {
+    "enabled": true,
+    "pushWeCom": false,
+    "webhook": "",
+    "dedupe": "daily",
+    "summaries": true,
+    "aiSearchSummary": {
+      "enabled": true,
+      "maxChars": 110
+    },
+    "platforms": {
+      "weibo": {
+        "enabled": true,
+        "rankMax": 10,
+        "hotMin": 500000
+      },
+      "douyin": {
+        "enabled": true,
+        "rankMax": 10,
+        "hotMin": 8000000
+      }
+    }
+  },
+  "report": {
+    "topN": 10,
+    "minScore": 20,
+    "requireSeedPlatforms": true,
+    "seedPlatforms": ["weibo", "douyin"],
+    "aiSuggestions": true,
+    "aiSuggestionLimit": 8,
+    "pushWeCom": false,
+    "webhook": ""
+  }
+}

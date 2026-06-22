@@ -1,0 +1,427 @@
+#!/usr/bin/env node
+
+const fs = require('fs');
+const path = require('path');
+const https = require('https');
+
+const { fetchWeiboSignals } = require('./adapters/weibo-adapter');
+const { fetchDouyinSignals } = require('./adapters/douyin-adapter');
+const { fetchTiebaSignals } = require('./adapters/tieba-adapter');
+const { fetchHupuSignals } = require('./adapters/hupu-adapter');
+const { clusterSignals, buildNextState } = require('./lib/clusterer');
+const { generateReport, selectReportClusters, hasBroadcastSeed } = require('./lib/report-generator');
+const { classifySignal } = require('./lib/category-classifier');
+const { applyAISuggestions } = require('./lib/ai-suggestions');
+const { normalizeForCompare } = require('./lib/signals');
+const {
+  loadLatestSnapshot,
+  loadRecentSnapshots,
+  snapshotToSignals
+} = require('./lib/snapshot-store');
+
+const DEFAULT_CONFIG = {
+  platforms: {
+    weibo: { enabled: true, maxItems: 50 },
+    douyin: { enabled: true, maxItems: 50 },
+    tieba: { enabled: true, maxItems: 50 },
+    hupu: {
+      enabled: true,
+      maxItems: 80,
+      boards: [
+        { board: '步行街', url: 'https://bbs.hupu.com/all-gambia', maxItems: 25 },
+        { board: '英雄联盟', url: 'https://bbs.hupu.com/lol', maxItems: 25 },
+        { board: 'NBA', url: 'https://bbs.hupu.com/nba', maxItems: 25 },
+        { board: '国际足球', url: 'https://bbs.hupu.com/soccer', maxItems: 25 }
+      ]
+    }
+  },
+  filters: {
+    allowedCategories: ['游戏', '电竞', '体育'],
+    minTitleLength: 4
+  },
+  cluster: {
+    similarityThreshold: 0.42
+  },
+  report: {
+    topN: 10,
+    minScore: 20,
+    requireSeedPlatforms: true,
+    seedPlatforms: ['weibo', 'douyin'],
+    aiSuggestions: true,
+    aiSuggestionLimit: 8,
+    pushWeCom: false,
+    webhook: ''
+  }
+};
+
+function getDefaultDataDir() {
+  if (process.env.SIBYL_DATA_DIR) return process.env.SIBYL_DATA_DIR;
+  const openclawWorkspace = '/root/.openclaw/workspace';
+  if (fs.existsSync(openclawWorkspace)) {
+    return path.join(openclawWorkspace, 'data', 'sibyl');
+  }
+  return path.resolve(__dirname, '..', 'data');
+}
+
+const DATA_DIR = getDefaultDataDir();
+const CONFIG_FILE = process.env.SIBYL_CONFIG || path.join(DATA_DIR, 'config.json');
+const STATE_FILE = path.join(DATA_DIR, 'state.json');
+const SIGNALS_FILE = path.join(DATA_DIR, 'signals-latest.json');
+const CLUSTERS_FILE = path.join(DATA_DIR, 'clusters-latest.json');
+const REPORT_FILE = path.join(DATA_DIR, 'report-latest.md');
+
+function mergeConfig(base, override) {
+  if (!override || typeof override !== 'object') return base;
+  const result = Array.isArray(base) ? [...base] : { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      result[key] = mergeConfig(base?.[key] || {}, value);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+function ensureDir(dir) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
+
+function readJson(file, fallback) {
+  try {
+    if (fs.existsSync(file)) {
+      return JSON.parse(fs.readFileSync(file, 'utf8'));
+    }
+  } catch (e) {
+    console.error(`读取JSON失败 ${file}:`, e.message);
+  }
+  return fallback;
+}
+
+function writeJson(file, data) {
+  fs.writeFileSync(file, JSON.stringify(data, null, 2));
+}
+
+function loadConfig() {
+  ensureDir(DATA_DIR);
+  const fileConfig = readJson(CONFIG_FILE, {});
+  return mergeConfig(DEFAULT_CONFIG, fileConfig);
+}
+
+function enrichSignals(signals) {
+  return signals.map(signal => {
+    const classification = classifySignal(signal);
+    return {
+      ...signal,
+      category: classification.category,
+      matchedKeywords: classification.matchedKeywords,
+      categoryMatches: classification.categoryMatches,
+      filteredReason: classification.filteredReason || null
+    };
+  });
+}
+
+function filterSignals(signals, config) {
+  const filters = config.filters || {};
+  const allowedCategories = filters.allowedCategories || ['游戏', '电竞', '体育'];
+  return signals.filter(signal => {
+    if (!signal.title || signal.title.length < (filters.minTitleLength || 4)) return false;
+    return signal.category && allowedCategories.includes(signal.category);
+  });
+}
+
+async function collectPlatform(name, fetcher, platformConfig) {
+  if (!platformConfig || platformConfig.enabled === false) {
+    return { name, signals: [], skipped: true };
+  }
+
+  try {
+    const signals = await fetcher(platformConfig);
+    return { name, signals, skipped: false };
+  } catch (error) {
+    const partialSignals = Array.isArray(error.partialSignals) ? error.partialSignals : [];
+    return {
+      name,
+      signals: partialSignals,
+      skipped: false,
+      error: error.message
+    };
+  }
+}
+
+function compactSignal(signal) {
+  const { raw, tokens, ...rest } = signal;
+  return rest;
+}
+
+function compactCluster(cluster, reportConfig = {}) {
+  return {
+    topicId: cluster.topicId,
+    title: cluster.mainSignal.title,
+    status: cluster.status,
+    statusLabel: cluster.statusLabel,
+    score: cluster.score,
+    previousScore: cluster.previousScore,
+    growthRate: cluster.growthRate,
+    hourlyTrend: cluster.hourlyTrend || null,
+    category: cluster.category,
+    hasBroadcastSeed: hasBroadcastSeed(cluster, reportConfig),
+    aiSuggestion: cluster.aiSuggestion || null,
+    suggestionSource: cluster.suggestionSource || null,
+    broadcastReasons: cluster.broadcastReasons || [],
+    platformCount: cluster.platformCount,
+    platformSummary: cluster.platformSummary,
+    totalHeat: cluster.totalHeat,
+    bestRank: cluster.bestRank,
+    keywords: cluster.keywords,
+    entityTokens: cluster.entityTokens,
+    eventConcepts: cluster.eventConcepts,
+    firstSeenAt: cluster.firstSeenAt,
+    lastSeenAt: cluster.lastSeenAt,
+    signals: cluster.signals.map(compactSignal)
+  };
+}
+
+function sendWeComMessage(webhookUrl, content) {
+  return new Promise((resolve) => {
+    if (!webhookUrl) {
+      resolve(false);
+      return;
+    }
+
+    const url = new URL(webhookUrl);
+    const data = JSON.stringify({
+      msgtype: 'markdown',
+      markdown: { content }
+    });
+
+    const req = https.request({
+      hostname: url.hostname,
+      path: url.pathname + url.search,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(data)
+      }
+    }, (res) => {
+      let responseData = '';
+      res.on('data', chunk => responseData += chunk);
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(responseData);
+          resolve(parsed.errcode === 0);
+        } catch (e) {
+          resolve(false);
+        }
+      });
+    });
+
+    req.on('error', () => resolve(false));
+    req.setTimeout(10000, () => {
+      req.destroy();
+      resolve(false);
+    });
+    req.write(data);
+    req.end();
+  });
+}
+
+function messageBytes(text) {
+  return Buffer.byteLength(text, 'utf8');
+}
+
+function splitForWeCom(report, maxBytes = 3200) {
+  if (messageBytes(report) <= maxBytes) return [report];
+  const sections = report.split(/\n(?=### \d+\. )/);
+  const chunks = [];
+  let current = sections.shift() || '';
+  for (const section of sections) {
+    if (messageBytes(current + '\n' + section) > maxBytes && current.trim()) {
+      chunks.push(current.trim());
+      current = section;
+    } else {
+      current += '\n' + section;
+    }
+  }
+  if (current.trim()) chunks.push(current.trim());
+  return chunks;
+}
+
+function logSuggestionSources(clusters, config = {}) {
+  const selected = selectReportClusters(clusters, config);
+  if (!selected.length) return;
+
+  console.log('   处理建议来源:');
+  selected.forEach((cluster, index) => {
+    const source = cluster.suggestionSource || (cluster.aiSuggestion ? 'AI生成' : '规则生成');
+    console.log(`     ${index + 1}. ${source} - ${cluster.mainSignal.title}`);
+  });
+}
+
+function snapshotPlatforms(snapshot) {
+  return snapshot?.platforms?.length
+    ? snapshot.platforms
+    : [...new Set((snapshot?.records || []).map(record => record.platform))];
+}
+
+function snapshotErrors(snapshot) {
+  return (snapshot?.errors || []).map(error => ({
+    name: error.platform || 'unknown',
+    error: error.message || String(error)
+  }));
+}
+
+function recordKey(record) {
+  return `${record.platform}:${record.normalizedTopic || normalizeForCompare(record.topic || record.title || '')}`;
+}
+
+function signalKey(signal) {
+  return `${signal.platform}:${signal.normalizedTitle || normalizeForCompare(signal.title || '')}`;
+}
+
+function attachSnapshotTrends(clusters, snapshots) {
+  if (!snapshots?.length) return clusters;
+  const records = snapshots.flatMap(snapshot => snapshot.records || []);
+
+  clusters.forEach(cluster => {
+    const keys = new Set((cluster.signals || []).map(signalKey));
+    const samples = records
+      .filter(record => keys.has(recordKey(record)))
+      .sort((a, b) => new Date(a.capturedAt) - new Date(b.capturedAt));
+
+    if (!samples.length) return;
+
+    const mainKey = signalKey(cluster.mainSignal);
+    const mainSamples = samples.filter(record => recordKey(record) === mainKey);
+    const trendSamples = mainSamples.length ? mainSamples : samples;
+    const peak = trendSamples.reduce((best, item) => {
+      if (!best) return item;
+      return (item.heat || 0) > (best.heat || 0) ? item : best;
+    }, null);
+    const latest = trendSamples[trendSamples.length - 1];
+    const currentHeat = cluster.mainSignal?.heat || latest?.heat || 0;
+    const peakHeat = peak?.heat || 0;
+    const dropFromPeak = peakHeat > 0 && currentHeat < peakHeat
+      ? Number(((peakHeat - currentHeat) / peakHeat).toFixed(2))
+      : 0;
+
+    cluster.hourlyTrend = {
+      sampleCount: trendSamples.length,
+      currentHeat,
+      currentRank: cluster.mainSignal?.rank || latest?.rank || null,
+      peakHeat,
+      peakRank: peak?.rank || null,
+      peakAt: peak?.capturedAt || null,
+      peakPlatform: peak?.platform || cluster.mainSignal?.platform,
+      peakPlatformLabel: peak?.platformLabel || cluster.mainSignal?.platformLabel,
+      dropFromPeak
+    };
+  });
+
+  return clusters;
+}
+
+async function maybePushReport(report, config, args) {
+  const reportConfig = config.report || {};
+  const webhook = process.env.SIBYL_REPORT_WEBHOOK ||
+    process.env.WECOM_WEBHOOK ||
+    reportConfig.webhook ||
+    '';
+  const shouldPush = (reportConfig.pushWeCom || args.includes('--push')) && !args.includes('--no-push') && webhook;
+  if (!shouldPush) return false;
+
+  const chunks = splitForWeCom(report);
+  let allSent = true;
+  for (let i = 0; i < chunks.length; i++) {
+    const prefix = chunks.length > 1 ? `热点综合播报 (${i + 1}/${chunks.length})\n\n` : '';
+    const sent = await sendWeComMessage(webhook, prefix + chunks[i]);
+    allSent = allSent && sent;
+    if (i < chunks.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+  }
+  return allSent;
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  const config = loadConfig();
+  const previousState = readJson(STATE_FILE, {});
+  const reportConfig = config.report || {};
+
+  const platformFetchers = [
+    ['weibo', fetchWeiboSignals, config.platforms.weibo],
+    ['douyin', fetchDouyinSignals, config.platforms.douyin],
+    ['tieba', fetchTiebaSignals, config.platforms.tieba],
+    ['hupu', fetchHupuSignals, config.platforms.hupu]
+  ];
+
+  let source = 'live';
+  let errors = [];
+  let platformNames = [];
+  let rawSignals = [];
+  let recentSnapshots = [];
+  const snapshotMaxAge = config.snapshot?.maxAgeMinutes || 20;
+  const shouldUseSnapshot = !args.includes('--live') && !args.includes('--fetch');
+  const latestSnapshot = shouldUseSnapshot ? loadLatestSnapshot({ maxAgeMinutes: snapshotMaxAge }) : null;
+
+  if (latestSnapshot) {
+    source = 'snapshot';
+    rawSignals = snapshotToSignals(latestSnapshot);
+    platformNames = snapshotPlatforms(latestSnapshot);
+    errors = snapshotErrors(latestSnapshot);
+    recentSnapshots = loadRecentSnapshots({ minutes: config.snapshot?.trendWindowMinutes || 70 });
+    console.log(`使用 Sibyl 最新快照生成播报: ${latestSnapshot.capturedAt}`);
+  } else {
+    console.log('开始采集多平台热点信号...');
+    const results = await Promise.all(platformFetchers.map(([name, fetcher, platformConfig]) =>
+      collectPlatform(name, fetcher, platformConfig)
+    ));
+
+    errors = results.filter(result => result.error);
+    rawSignals = results.flatMap(result => result.signals);
+    platformNames = results.filter(result => !result.skipped).map(result => result.name);
+  }
+
+  const signals = filterSignals(enrichSignals(rawSignals), config);
+  const clusters = clusterSignals(signals, previousState, config.cluster || {});
+  attachSnapshotTrends(clusters, recentSnapshots);
+  await applyAISuggestions(clusters, {
+    ...reportConfig,
+    aiSuggestions: !args.includes('--no-ai') && (reportConfig.aiSuggestions !== false)
+  });
+  const generatedAt = new Date().toISOString();
+  const report = generateReport(clusters, {
+    generatedAt,
+    platforms: platformNames,
+    rawSignalCount: rawSignals.length,
+    signalCount: signals.length,
+    source
+  }, reportConfig);
+
+  ensureDir(DATA_DIR);
+  writeJson(SIGNALS_FILE, signals.map(compactSignal));
+  writeJson(CLUSTERS_FILE, clusters.map(cluster => compactCluster(cluster, reportConfig)));
+  fs.writeFileSync(REPORT_FILE, report);
+  writeJson(STATE_FILE, buildNextState(clusters));
+
+  const pushed = await maybePushReport(report, config, args);
+  if (args.includes('--print')) {
+    console.log('\n' + report);
+  }
+
+  console.log('✅ Sibyl 生成热点综合播报完成');
+  console.log(`   原始信号: ${rawSignals.length} 条`);
+  console.log(`   入池信号: ${signals.length} 条`);
+  console.log(`   聚合话题: ${clusters.length} 个`);
+  console.log(`   数据来源: ${source === 'snapshot' ? 'Sibyl快照' : '现场采集'}`);
+  console.log(`   报告文件: ${REPORT_FILE}`);
+  console.log(`   企业微信推送: ${pushed ? '已发送' : '未发送'}`);
+  errors.forEach(error => console.warn(`⚠️ ${error.name} 采集异常: ${error.error}`));
+  logSuggestionSources(clusters, reportConfig);
+}
+
+main().catch(error => {
+  console.error('❌ Sibyl 执行失败:', error.message);
+  process.exit(1);
+});
