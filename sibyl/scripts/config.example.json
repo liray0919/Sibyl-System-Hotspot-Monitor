@@ -61,6 +61,12 @@
       "enabled": true,
       "maxChars": 110
     },
+    "weiboAI": {
+      "appId": "",
+      "appSecret": "",
+      "authUrl": "https://open-im.api.weibo.com/open/auth/ws_token",
+      "searchUrl": "https://open-im.api.weibo.com/open/wis/search_query"
+    },
     "platforms": {
       "weibo": {
         "enabled": true,

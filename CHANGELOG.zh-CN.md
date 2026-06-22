@@ -2,6 +2,18 @@
 
 [English](CHANGELOG.en.md) | [中文 README](README.zh-CN.md)
 
+## 1.2.5 - 2026-06-22
+
+- 新增 `scripts/check-deploy.js` 部署后自检脚本。
+- 自检覆盖 webhook、微博智搜、AI 模型、系统时区、数据目录和人工确认项。
+- 自检输出只显示“已配置/未配置”，避免打印真实 webhook、AppSecret 或模型密钥。
+
+## 1.2.4 - 2026-06-22
+
+- 微博智搜凭据和 endpoint 支持环境变量配置。
+- 新增 `alerts.weiboAI` 配置项，允许在 Sibyl 配置文件中设置微博智搜 appId、appSecret、authUrl 和 searchUrl。
+- 保留 `/root/.openclaw/openclaw.json` 中 `channels.weibo` 的原有配置作为回退。
+
 ## 1.2.3 - 2026-06-22
 
 - 将综合分展示档位简化为三档：`观察`、`关注后续`、`强热点`。

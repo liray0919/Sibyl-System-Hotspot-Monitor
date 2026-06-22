@@ -1,7 +1,7 @@
 ---
 name: sibyl
 description: Sibyl 是多平台热点信号聚合与趋势研判系统，以微博、抖音热搜作为播报种子，聚合贴吧、虎扑补充信号，按统一模型做事件合并、综合评分、趋势判断和Markdown简报生成，可选推送企业微信。
-version: 1.2.3
+version: 1.2.5
 author: Misaka Studio
 license: MIT
 tags:
@@ -140,6 +140,7 @@ cp scripts/config.example.json /root/.openclaw/workspace/data/sibyl/config.json
 - `aiSuggestions: true` 时，Sibyl 会尝试调用 OpenClaw 模型生成更自然的处理建议；若模型不可用，会自动使用规则兜底，并在运行日志与聚合数据中标记建议来源。
 - `处理建议` 面向用增市场阅读者，目标是判断热点能否服务“当日首次消费内容去高活DAU”；它用于判断是否适合作为当日首消内容入口、如何承接、观察什么风险，不是对事件当事人、球队、选手或产品方的建议，也不回答热点标题里的争议问题。
 - 企业微信 Webhook 推荐使用环境变量，不要硬编码到脚本。即时预警优先读取 `SIBYL_ALERT_WEBHOOK`，小时综合播报优先读取 `SIBYL_REPORT_WEBHOOK`；未配置时都会回退到旧的 `WECOM_WEBHOOK` 和配置文件里的 `webhook`。
+- 微博智搜用于即时预警摘要补全，配置优先级为：环境变量 → `alerts.weiboAI` → `/root/.openclaw/openclaw.json` 的 `channels.weibo` → 默认 endpoint。建议凭据继续放在 OpenClaw 环境或配置里，不要写入技能源码。
 
 Webhook 示例：
 
@@ -148,7 +149,23 @@ export SIBYL_ALERT_WEBHOOK="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key
 export SIBYL_REPORT_WEBHOOK="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=REPORT_KEY"
 ```
 
+微博智搜可选环境变量：
+
+```bash
+export SIBYL_WEIBO_APP_ID="WEIBO_APP_ID"
+export SIBYL_WEIBO_APP_SECRET="WEIBO_APP_SECRET"
+export SIBYL_WEIBO_WIS_AUTH_URL="https://open-im.api.weibo.com/open/auth/ws_token"
+export SIBYL_WEIBO_WIS_SEARCH_URL="https://open-im.api.weibo.com/open/wis/search_query"
+```
+
 OpenClaw 定时任务运行时不一定会继承交互式 shell 的环境变量。正式部署时，必须在任务命令中显式提供 webhook，或在 crontab 顶部声明环境变量，避免脚本运行成功但推送失败。
+
+部署后可运行自检，确认 webhook、微博智搜、时区和数据目录是否就绪：
+
+```bash
+cd /root/.openclaw/workspace/skills/sibyl
+node scripts/check-deploy.js
+```
 
 ## 播报格式
 

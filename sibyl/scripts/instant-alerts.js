@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const https = require('https');
+const http = require('http');
 const path = require('path');
 
 const { collectSnapshot } = require('./collect-snapshot');
@@ -35,6 +36,12 @@ const DEFAULT_CONFIG = {
     aiSearchSummary: {
       enabled: true,
       maxChars: 110
+    },
+    weiboAI: {
+      appId: '',
+      appSecret: '',
+      authUrl: 'https://open-im.api.weibo.com/open/auth/ws_token',
+      searchUrl: 'https://open-im.api.weibo.com/open/wis/search_query'
     },
     platforms: {
       weibo: {
@@ -73,6 +80,9 @@ const AI_SEARCH_SUMMARY_PROMPT = `你是热点即时预警摘要助手。请围�
 平台：{platform}
 
 请直接输出摘要正文。`;
+
+const DEFAULT_WEIBO_WIS_AUTH_URL = 'https://open-im.api.weibo.com/open/auth/ws_token';
+const DEFAULT_WEIBO_WIS_SEARCH_URL = 'https://open-im.api.weibo.com/open/wis/search_query';
 
 function loadConfig() {
   const dataDir = getDataDir();
@@ -179,41 +189,62 @@ function detailLink(signal) {
   return '';
 }
 
-function getWeiboCredentials() {
+function readOpenClawConfig() {
   try {
-    const config = JSON.parse(fs.readFileSync('/root/.openclaw/openclaw.json', 'utf8'));
-    const weiboConfig = config.channels?.weibo || {};
-    return {
-      appId: String(weiboConfig.appId || ''),
-      appSecret: weiboConfig.appSecret || ''
-    };
+    return JSON.parse(fs.readFileSync('/root/.openclaw/openclaw.json', 'utf8'));
   } catch (e) {
-    return { appId: '', appSecret: '' };
+    return {};
   }
 }
 
 function getModelConfig(customConfig = null) {
   if (customConfig?.ai && customConfig.ai.apiKey) return customConfig.ai;
   try {
-    const config = JSON.parse(fs.readFileSync('/root/.openclaw/openclaw.json', 'utf8'));
+    const config = readOpenClawConfig();
     return config.models?.providers?.aliyun || null;
   } catch (e) {
     return null;
   }
 }
 
-function getWeiboToken() {
+function getWeiboAIConfig(customConfig = {}) {
+  const openclawConfig = readOpenClawConfig();
+  const openclawWeibo = openclawConfig.channels?.weibo || {};
+  const configured = customConfig.alerts?.weiboAI || customConfig.weiboAI || {};
+
+  return {
+    appId: String(process.env.SIBYL_WEIBO_APP_ID || configured.appId || openclawWeibo.appId || ''),
+    appSecret: process.env.SIBYL_WEIBO_APP_SECRET || configured.appSecret || openclawWeibo.appSecret || '',
+    authUrl: process.env.SIBYL_WEIBO_WIS_AUTH_URL || configured.authUrl || DEFAULT_WEIBO_WIS_AUTH_URL,
+    searchUrl: process.env.SIBYL_WEIBO_WIS_SEARCH_URL || configured.searchUrl || DEFAULT_WEIBO_WIS_SEARCH_URL
+  };
+}
+
+function requestClient(parsedUrl) {
+  return parsedUrl.protocol === 'http:' ? http : https;
+}
+
+function getWeiboToken(customConfig = {}) {
   return new Promise((resolve) => {
-    const { appId, appSecret } = getWeiboCredentials();
+    const { appId, appSecret, authUrl } = getWeiboAIConfig(customConfig);
     if (!appId || !appSecret) {
       resolve(null);
       return;
     }
 
     const data = JSON.stringify({ app_id: appId, app_secret: appSecret });
-    const req = https.request({
-      hostname: 'open-im.api.weibo.com',
-      path: '/open/auth/ws_token',
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(authUrl);
+    } catch (e) {
+      resolve(null);
+      return;
+    }
+
+    const req = requestClient(parsedUrl).request({
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || (parsedUrl.protocol === 'http:' ? 80 : 443),
+      path: parsedUrl.pathname + parsedUrl.search,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -242,16 +273,24 @@ function getWeiboToken() {
   });
 }
 
-function searchWeiboAI(query, token) {
+function searchWeiboAI(query, token, customConfig = {}) {
   return new Promise((resolve) => {
     if (!token) {
       resolve('');
       return;
     }
 
-    const encodedQuery = encodeURIComponent(query);
-    const url = `https://open-im.api.weibo.com/open/wis/search_query?query=${encodedQuery}&token=${token}`;
-    https.get(url, { headers: { 'Content-Type': 'application/json' } }, (res) => {
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(getWeiboAIConfig(customConfig).searchUrl);
+      parsedUrl.searchParams.set('query', query);
+      parsedUrl.searchParams.set('token', token);
+    } catch (e) {
+      resolve('');
+      return;
+    }
+
+    requestClient(parsedUrl).get(parsedUrl, { headers: { 'Content-Type': 'application/json' } }, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
@@ -325,9 +364,9 @@ async function buildAlertSummary(alert, context) {
 
   if (!context.enableSummaries) return { summary: '暂无摘要' };
 
-  const token = context.weiboToken || await getWeiboToken();
+  const token = context.weiboToken || await getWeiboToken(context.config);
   context.weiboToken = token;
-  const rawContent = await searchWeiboAI(signal.title, token);
+  const rawContent = await searchWeiboAI(signal.title, token, context.config);
   if (rawContent) {
     const elixirResult = await summarizeContent(rawContent, signal.title);
     if (elixirResult.isCommercial) {

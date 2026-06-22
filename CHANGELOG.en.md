@@ -4,6 +4,18 @@
 
 All notable changes to Sibyl System Hotspot Monitor are recorded here.
 
+## 1.2.5 - 2026-06-22
+
+- Added `scripts/check-deploy.js` for post-deployment self-checks.
+- The self-check covers webhooks, Weibo intelligent search, AI model configuration, system time zone, data directory, and manual confirmation items.
+- The self-check only prints configured/missing status and does not expose real webhooks, AppSecrets, or model keys.
+
+## 1.2.4 - 2026-06-22
+
+- Added environment-variable support for Weibo intelligent search credentials and endpoints.
+- Added `alerts.weiboAI` configuration for appId, appSecret, authUrl, and searchUrl.
+- Kept `/root/.openclaw/openclaw.json` `channels.weibo` as a backward-compatible fallback.
+
 ## 1.2.3 - 2026-06-22
 
 - Simplified public report score labels into three reader-facing levels: `观察`, `关注后续`, and `强热点`.

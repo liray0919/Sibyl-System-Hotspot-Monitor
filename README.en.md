@@ -35,6 +35,7 @@ The system is designed for fast operational reading: it keeps high-heat Weibo an
 │       ├── collect-snapshot.js
 │       ├── instant-alerts.js
 │       ├── sibyl.js
+│       ├── check-deploy.js
 │       ├── config.example.json
 │       ├── adapters/
 │       └── lib/
@@ -116,6 +117,31 @@ Webhook environment variables are preferred over hard-coded configuration:
 export SIBYL_ALERT_WEBHOOK="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=ALERT_KEY"
 export SIBYL_REPORT_WEBHOOK="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=REPORT_KEY"
 ```
+
+Optional Weibo intelligent search environment variables:
+
+```bash
+export SIBYL_WEIBO_APP_ID="WEIBO_APP_ID"
+export SIBYL_WEIBO_APP_SECRET="WEIBO_APP_SECRET"
+export SIBYL_WEIBO_WIS_AUTH_URL="https://open-im.api.weibo.com/open/auth/ws_token"
+export SIBYL_WEIBO_WIS_SEARCH_URL="https://open-im.api.weibo.com/open/wis/search_query"
+```
+
+## Deployment Self-Check
+
+After deployment, run the self-check script to confirm key configuration:
+
+```bash
+cd sibyl
+SIBYL_DATA_DIR=./data node scripts/check-deploy.js
+```
+
+The self-check reports:
+
+- Required items: skill directory, Node.js, data directory, instant-alert webhook, and report webhook.
+- Recommended items: config file, separate webhooks, and system time zone.
+- Optional enhancements: Weibo intelligent search and AI model configuration.
+- Manual confirmation items: OpenClaw `delivery.mode` and scheduled tasks.
 
 ## Scheduled Deployment
 

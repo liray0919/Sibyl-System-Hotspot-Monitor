@@ -35,6 +35,7 @@ Sibyl System Hotspot Monitor 是一个多平台热点信号聚合与趋势研判
 │       ├── collect-snapshot.js       # 统一采集多平台快照
 │       ├── instant-alerts.js         # 即时预警
 │       ├── sibyl.js                  # 小时综合播报
+│       ├── check-deploy.js           # 部署后自检
 │       ├── config.example.json       # 配置示例
 │       ├── adapters/                 # 平台采集适配器
 │       └── lib/                      # 分类、聚合、评分、报告生成
@@ -116,6 +117,31 @@ Webhook 推荐用环境变量配置，避免写死在文件里：
 export SIBYL_ALERT_WEBHOOK="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=ALERT_KEY"
 export SIBYL_REPORT_WEBHOOK="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=REPORT_KEY"
 ```
+
+微博智搜可选环境变量：
+
+```bash
+export SIBYL_WEIBO_APP_ID="WEIBO_APP_ID"
+export SIBYL_WEIBO_APP_SECRET="WEIBO_APP_SECRET"
+export SIBYL_WEIBO_WIS_AUTH_URL="https://open-im.api.weibo.com/open/auth/ws_token"
+export SIBYL_WEIBO_WIS_SEARCH_URL="https://open-im.api.weibo.com/open/wis/search_query"
+```
+
+## 部署自检
+
+部署后可以运行自检脚本，确认关键配置是否就绪：
+
+```bash
+cd sibyl
+SIBYL_DATA_DIR=./data node scripts/check-deploy.js
+```
+
+自检会提示：
+
+- 必需项：技能目录、Node.js、数据目录、即时预警 webhook、综合播报 webhook。
+- 推荐项：配置文件、webhook 拆分、系统时区。
+- 可选增强：微博智搜、AI 模型配置。
+- 人工确认：OpenClaw `delivery.mode` 和定时任务。
 
 ## 定时部署
 
