@@ -2,6 +2,8 @@
 
 [English](CHANGELOG.en.md) | [中文 README](README.zh-CN.md)
 
+作者：Misaka Studio
+
 ## 1.2.5 - 2026-06-22
 
 - 新增 `scripts/check-deploy.js` 部署后自检脚本。

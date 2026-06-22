@@ -1,5 +1,7 @@
 # Changelog
 
+Author: Misaka Studio
+
 Choose a language:
 
 - [中文版本更新记录](CHANGELOG.zh-CN.md)

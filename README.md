@@ -1,5 +1,7 @@
 # Sibyl System Hotspot Monitor
 
+Author: Misaka Studio
+
 Choose a language:
 
 - [中文说明](README.zh-CN.md)

@@ -2,6 +2,8 @@
 
 [中文](CHANGELOG.zh-CN.md) | [English README](README.en.md)
 
+Author: Misaka Studio
+
 All notable changes to Sibyl System Hotspot Monitor are recorded here.
 
 ## 1.2.5 - 2026-06-22

@@ -2,6 +2,8 @@
 
 [中文](README.zh-CN.md) | [Changelog](CHANGELOG.en.md)
 
+Author: Misaka Studio
+
 Sibyl System Hotspot Monitor is a multi-platform hotspot signal aggregator and trend monitor for game, esports, and sports topics. It collects public trend signals from Weibo, Douyin, Tieba, and Hupu, then turns scattered hot-board items into structured alerts and hourly Markdown briefings.
 
 The system is designed for fast operational reading: it keeps high-heat Weibo and Douyin instant alerts, adds Tieba and Hupu as community signals, merges related events across platforms, scores trend strength, and generates concise action-oriented reports for enterprise chat workflows.
